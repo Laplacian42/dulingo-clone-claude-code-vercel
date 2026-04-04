@@ -2,13 +2,13 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'LinguaLearn - English Learning App',
-  description: 'Learn English the fun way with LinguaLearn - a Duolingo-style language learning app',
-  keywords: 'English learning, language app, learn English, vocabulary, grammar',
+  title: 'LinguaLearn - Englisch lernen',
+  description: 'Lerne Englisch auf spielerische Weise mit LinguaLearn – Deutsch zu Englisch',
+  keywords: 'Englisch lernen, Sprachlern-App, Deutsch Englisch, Vokabeln, Grammatik',
   authors: [{ name: 'LinguaLearn' }],
   openGraph: {
-    title: 'LinguaLearn - English Learning App',
-    description: 'Learn English the fun way with LinguaLearn',
+    title: 'LinguaLearn - Englisch lernen',
+    description: 'Lerne Englisch auf spielerische Weise mit LinguaLearn',
     type: 'website',
   },
 }
