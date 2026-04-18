@@ -143,6 +143,8 @@ export default function DJMax() {
   const [aName, setAName] = useState('House Beat · 128 BPM')
   const [bName, setBName] = useState('Hip-Hop Beat · 90 BPM')
   const [padActive, setPadActive] = useState<string | null>(null)
+  const [aScratch, setAScratch] = useState(false)
+  const [bScratch, setBScratch] = useState(false)
 
   const N = useRef<Nodes | null>(null)
   const aSrc = useRef<AudioBufferSourceNode | null>(null)
@@ -155,6 +157,8 @@ export default function DJMax() {
   const aAngle = useRef(0); const bAngle = useRef(0)
   const aPlaying = useRef(false); const bPlaying = useRef(false)
   const aPR = useRef(1.0); const bPR = useRef(1.0)
+  const aScratchRef = useRef(false); const bScratchRef = useRef(false)
+  const aScratchX = useRef(0); const bScratchX = useRef(0)
   const vA = useRef<HTMLCanvasElement>(null)
   const vB = useRef<HTMLCanvasElement>(null)
   const vizRef = useRef<HTMLCanvasElement>(null)
@@ -225,6 +229,37 @@ export default function DJMax() {
     else { setBPitch(v); bPR.current = v; if (bSrc.current) bSrc.current.playbackRate.value = v }
   }, [])
 
+  const startScratch = useCallback((d: 'A' | 'B', clientX: number) => {
+    if (!ready) return
+    if (d === 'A') { aScratchRef.current = true; aScratchX.current = clientX; setAScratch(true) }
+    else { bScratchRef.current = true; bScratchX.current = clientX; setBScratch(true) }
+  }, [ready])
+
+  const moveScratch = useCallback((d: 'A' | 'B', clientX: number) => {
+    const scratching = d === 'A' ? aScratchRef.current : bScratchRef.current
+    if (!scratching) return
+    const lastX = d === 'A' ? aScratchX.current : bScratchX.current
+    const delta = clientX - lastX
+    if (d === 'A') aScratchX.current = clientX
+    else bScratchX.current = clientX
+    const src = d === 'A' ? aSrc.current : bSrc.current
+    if (src) {
+      const next = Math.max(0, Math.min(4, src.playbackRate.value + delta * 0.04))
+      src.playbackRate.value = next
+    }
+  }, [])
+
+  const endScratch = useCallback((d: 'A' | 'B') => {
+    const n = N.current
+    if (d === 'A') {
+      aScratchRef.current = false; setAScratch(false)
+      if (aSrc.current && n) aSrc.current.playbackRate.setTargetAtTime(aPR.current, n.ctx.currentTime, 0.08)
+    } else {
+      bScratchRef.current = false; setBScratch(false)
+      if (bSrc.current && n) bSrc.current.playbackRate.setTargetAtTime(bPR.current, n.ctx.currentTime, 0.08)
+    }
+  }, [])
+
   useEffect(() => { if (N.current) N.current.aGain.gain.value = aVol }, [aVol])
   useEffect(() => { if (N.current) N.current.bGain.gain.value = bVol }, [bVol])
   useEffect(() => { if (N.current) N.current.masterGain.gain.value = master }, [master])
@@ -245,8 +280,8 @@ export default function DJMax() {
   useEffect(() => {
     let id: number
     const loop = () => {
-      if (aPlaying.current) aAngle.current += 0.018 * aPR.current
-      if (bPlaying.current) bAngle.current += 0.018 * bPR.current
+      if (aPlaying.current) aAngle.current += 0.018 * (aSrc.current?.playbackRate.value ?? aPR.current)
+      if (bPlaying.current) bAngle.current += 0.018 * (bSrc.current?.playbackRate.value ?? bPR.current)
       if (vA.current) drawVinyl(vA.current, aAngle.current, '#00ff88')
       if (vB.current) drawVinyl(vB.current, bAngle.current, '#00b4ff')
       if (vizRef.current && N.current) {
@@ -304,8 +339,18 @@ export default function DJMax() {
         <div className="text-[10px] font-bold tracking-widest truncate w-full text-center" style={{ color }}>DECK {d}</div>
         <div className="text-[9px] text-gray-500 truncate w-full text-center">{name}</div>
         <canvas ref={isA ? vA : vB} width={150} height={150} className="rounded-full flex-shrink-0"
-          style={{ boxShadow: `0 0 24px ${color}44` }} />
-        <div className="text-xs font-mono font-bold" style={{ color }}>♩ {Math.round(bpmBase * pitch)} BPM</div>
+          style={{ boxShadow: `0 0 24px ${(isA ? aScratch : bScratch) ? color : color + '44'}`, cursor: ready ? (isA ? aScratch : bScratch) ? 'grabbing' : 'grab' : 'default' }}
+          onMouseDown={e => { e.preventDefault(); e.stopPropagation(); startScratch(d, e.clientX) }}
+          onMouseMove={e => moveScratch(d, e.clientX)}
+          onMouseUp={() => endScratch(d)}
+          onMouseLeave={() => endScratch(d)}
+          onTouchStart={e => { e.stopPropagation(); startScratch(d, e.touches[0].clientX) }}
+          onTouchMove={e => { e.preventDefault(); moveScratch(d, e.touches[0].clientX) }}
+          onTouchEnd={() => endScratch(d)}
+        />
+        <div className="text-xs font-mono font-bold" style={{ color }}>
+          {(isA ? aScratch : bScratch) ? '✋ SCRATCH' : `♩ ${Math.round(bpmBase * pitch)} BPM`}
+        </div>
         <div className="flex gap-2">
           <button onClick={() => { if (!ready) { init().then(() => playDeck(d)); return } toggle(d) }}
             className="px-3 py-1.5 rounded text-xs font-bold transition-all active:scale-95"
