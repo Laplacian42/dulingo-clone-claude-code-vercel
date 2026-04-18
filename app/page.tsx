@@ -1,307 +1,403 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { lessons } from '@/data/lessons'
+import { useRef, useState, useEffect, useCallback } from 'react'
 
-interface LessonProgress {
-  completed: boolean
-  xpEarned: number
-  stars: number
-  accuracy: number
+// ── Audio synthesis ──────────────────────────────────────────────────────────
+
+function makeNoise(ctx: OfflineAudioContext, dur: number) {
+  const buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * dur)), ctx.sampleRate)
+  const d = buf.getChannelData(0)
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+  const src = ctx.createBufferSource(); src.buffer = buf; return src
 }
 
-interface UserProgress {
-  totalXP: number
-  streak: number
-  lessons: Record<number, LessonProgress>
-  dailyGoalProgress: number
-  lastActiveDate: string
+function kick(ctx: OfflineAudioContext, t: number, v = 1.5) {
+  const o = ctx.createOscillator(), g = ctx.createGain()
+  o.type = 'sine'
+  o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(0.001, t + 0.45)
+  g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
+  o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.5)
 }
 
-const defaultProgress: UserProgress = {
-  totalXP: 0,
-  streak: 1,
-  lessons: {},
-  dailyGoalProgress: 0,
-  lastActiveDate: new Date().toDateString(),
+function snare(ctx: OfflineAudioContext, t: number, v = 1) {
+  const n = makeNoise(ctx, 0.2), f = ctx.createBiquadFilter(), ng = ctx.createGain()
+  f.type = 'bandpass'; f.frequency.value = 3000; f.Q.value = 0.5
+  ng.gain.setValueAtTime(v, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  n.connect(f); f.connect(ng); ng.connect(ctx.destination); n.start(t); n.stop(t + 0.2)
+  const o = ctx.createOscillator(), og = ctx.createGain()
+  o.type = 'sine'
+  o.frequency.setValueAtTime(200, t); o.frequency.exponentialRampToValueAtTime(80, t + 0.1)
+  og.gain.setValueAtTime(0.7 * v, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  o.connect(og); og.connect(ctx.destination); o.start(t); o.stop(t + 0.1)
 }
 
-function getLessonStatusColor(lessonId: number, lessonColor: string) {
-  return lessonColor
+function hihat(ctx: OfflineAudioContext, t: number, dur = 0.05, v = 0.4) {
+  const n = makeNoise(ctx, Math.max(dur, 0.02)), f = ctx.createBiquadFilter(), g = ctx.createGain()
+  f.type = 'highpass'; f.frequency.value = 8000
+  g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  n.connect(f); f.connect(g); g.connect(ctx.destination); n.start(t); n.stop(t + dur)
 }
 
-function StarRating({ stars }: { stars: number }) {
-  return (
-    <div className="flex gap-0.5">
-      {[1, 2, 3].map((star) => (
-        <span
-          key={star}
-          className={`text-sm ${star <= stars ? 'text-duo-yellow' : 'text-gray-300'}`}
-        >
-          ★
-        </span>
-      ))}
-    </div>
-  )
-}
-
-export default function HomePage() {
-  const [progress, setProgress] = useState<UserProgress>(defaultProgress)
-  const [mounted, setMounted] = useState(false)
-
-  useEffect(() => {
-    setMounted(true)
-    const stored = localStorage.getItem('lingualearn-progress')
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as UserProgress
-        // Check if streak should reset (missed a day)
-        const lastActive = new Date(parsed.lastActiveDate)
-        const today = new Date()
-        const diffDays = Math.floor((today.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24))
-        if (diffDays > 1) {
-          parsed.streak = 0
-        }
-        setProgress(parsed)
-      } catch {
-        setProgress(defaultProgress)
-      }
+async function genBeat(type: 'house' | 'hiphop'): Promise<AudioBuffer> {
+  const bpm = type === 'house' ? 128 : 90
+  const bl = 60 / bpm, beats = 8, dur = beats * bl + 0.6
+  const ctx = new OfflineAudioContext(2, Math.ceil(44100 * dur), 44100)
+  if (type === 'house') {
+    for (let b = 0; b < beats; b++) {
+      const t = b * bl
+      kick(ctx, t)
+      if (b % 4 === 1 || b % 4 === 3) snare(ctx, t)
+      hihat(ctx, t, 0.04, 0.5); hihat(ctx, t + bl * 0.5, 0.04, 0.3)
     }
+    const o = ctx.createOscillator(), g = ctx.createGain()
+    o.type = 'sine'
+    ;[60,60,65,63,60,60,58,60].forEach((hz, i) => {
+      const t = i * bl
+      o.frequency.setValueAtTime(hz, t)
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.4, t + 0.02)
+      g.gain.setValueAtTime(0.4, t + bl * 0.85); g.gain.linearRampToValueAtTime(0, t + bl * 0.9)
+    })
+    o.connect(g); g.connect(ctx.destination); o.start(0); o.stop(dur)
+  } else {
+    ;[0,1.5,4,5.5].forEach(b => kick(ctx, b * bl, 1.8))
+    snare(ctx, 2 * bl); snare(ctx, 6 * bl)
+    for (let i = 0; i < beats * 2; i++) hihat(ctx, i * bl * 0.5, 0.04, 0.3)
+    ;[1,3,5,7].forEach(b => hihat(ctx, b * bl, 0.3, 0.4))
+    const o = ctx.createOscillator(), ff = ctx.createBiquadFilter(), g = ctx.createGain()
+    o.type = 'sawtooth'; ff.type = 'lowpass'; ff.frequency.value = 200
+    ;[55,55,50,52,55,55,53,55].forEach((hz, i) => {
+      const t = i * bl
+      o.frequency.setValueAtTime(hz, t)
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.5, t + 0.02)
+      g.gain.setValueAtTime(0.5, t + bl * 0.8); g.gain.linearRampToValueAtTime(0, t + bl * 0.85)
+    })
+    o.connect(ff); ff.connect(g); g.connect(ctx.destination); o.start(0); o.stop(dur)
+  }
+  return ctx.startRendering()
+}
+
+async function genPads(sr: number): Promise<Record<string, AudioBuffer>> {
+  const mk = async (fn: (c: OfflineAudioContext) => void, dur: number) => {
+    const c = new OfflineAudioContext(1, Math.max(1, Math.ceil(sr * dur)), sr)
+    fn(c); return c.startRendering()
+  }
+  const [k, s, h, cl, oh, b, st] = await Promise.all([
+    mk(c => kick(c, 0), 0.55),
+    mk(c => snare(c, 0), 0.3),
+    mk(c => hihat(c, 0, 0.05, 0.8), 0.1),
+    mk(c => { for (let i = 0; i < 3; i++) hihat(c, i * 0.012, 0.08, 1) }, 0.15),
+    mk(c => hihat(c, 0, 0.3, 0.6), 0.35),
+    mk(c => { const o = c.createOscillator(), g = c.createGain(); o.type = 'sine'; o.frequency.value = 80; g.gain.setValueAtTime(1,0); g.gain.exponentialRampToValueAtTime(0.001,0.4); o.connect(g); g.connect(c.destination); o.start(0); o.stop(0.4) }, 0.45),
+    mk(c => { const o = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(); o.type = 'sawtooth'; o.frequency.value = 440; f.type = 'lowpass'; f.frequency.setValueAtTime(1200,0); f.frequency.exponentialRampToValueAtTime(200,0.15); g.gain.setValueAtTime(0.8,0); g.gain.exponentialRampToValueAtTime(0.001,0.15); o.connect(f); f.connect(g); g.connect(c.destination); o.start(0); o.stop(0.15) }, 0.2),
+  ])
+  const rev = new AudioBuffer({ length: s.length, sampleRate: sr, numberOfChannels: 1 })
+  const sd = s.getChannelData(0), rd = rev.getChannelData(0)
+  for (let i = 0; i < sd.length; i++) rd[i] = sd[sd.length - 1 - i]
+  return { kick: k, snare: s, hihat: h, clap: cl, openhat: oh, bass: b, stab: st, reverse: rev }
+}
+
+// ── Vinyl drawing ────────────────────────────────────────────────────────────
+
+function drawVinyl(canvas: HTMLCanvasElement, angle: number, color: string) {
+  const c = canvas.getContext('2d'); if (!c) return
+  const s = canvas.width, cx = s / 2, cy = s / 2, r = s / 2 - 2
+  c.clearRect(0, 0, s, s)
+  c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.fillStyle = '#111'; c.fill()
+  for (let i = 1; i <= 16; i++) {
+    c.beginPath(); c.arc(cx, cy, r * (0.3 + 0.68 * i / 17), 0, Math.PI * 2)
+    c.strokeStyle = i % 3 === 0 ? '#333' : '#1c1c1c'; c.lineWidth = 1; c.stroke()
+  }
+  c.save(); c.translate(cx, cy); c.rotate(angle)
+  c.beginPath(); c.arc(0, 0, r * 0.28, 0, Math.PI * 2); c.fillStyle = color + '22'; c.fill()
+  c.strokeStyle = color; c.lineWidth = 2; c.stroke()
+  c.fillStyle = color; c.font = `bold ${Math.floor(r * 0.09)}px monospace`
+  c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('DJMAX', 0, 0)
+  c.beginPath(); c.arc(r * 0.14, 0, 3, 0, Math.PI * 2); c.fillStyle = color + 'bb'; c.fill()
+  c.beginPath(); c.arc(0, 0, 3, 0, Math.PI * 2); c.fillStyle = '#000'; c.fill()
+  c.restore()
+}
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface Nodes {
+  ctx: AudioContext; analyser: AnalyserNode; masterGain: GainNode
+  aGain: GainNode; aCF: GainNode; aBass: BiquadFilterNode; aMid: BiquadFilterNode; aTreble: BiquadFilterNode
+  bGain: GainNode; bCF: GainNode; bBass: BiquadFilterNode; bMid: BiquadFilterNode; bTreble: BiquadFilterNode
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
+export default function DJMax() {
+  const [ready, setReady] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [aPlay, setAPlay] = useState(false)
+  const [bPlay, setBPlay] = useState(false)
+  const [aVol, setAVol] = useState(0.8)
+  const [bVol, setBVol] = useState(0.8)
+  const [aPitch, setAPitch] = useState(1.0)
+  const [bPitch, setBPitch] = useState(1.0)
+  const [aBass, setABass] = useState(0); const [aMid, setAMid] = useState(0); const [aTreble, setATreble] = useState(0)
+  const [bBass, setBBass] = useState(0); const [bMid, setBMid] = useState(0); const [bTreble, setBTreble] = useState(0)
+  const [cf, setCf] = useState(0.5)
+  const [master, setMaster] = useState(0.8)
+  const [aName, setAName] = useState('House Beat · 128 BPM')
+  const [bName, setBName] = useState('Hip-Hop Beat · 90 BPM')
+  const [padActive, setPadActive] = useState<string | null>(null)
+
+  const N = useRef<Nodes | null>(null)
+  const aSrc = useRef<AudioBufferSourceNode | null>(null)
+  const bSrc = useRef<AudioBufferSourceNode | null>(null)
+  const aBuf = useRef<AudioBuffer | null>(null)
+  const bBuf = useRef<AudioBuffer | null>(null)
+  const aOff = useRef(0); const bOff = useRef(0)
+  const aStart = useRef(0); const bStart = useRef(0)
+  const padBufs = useRef<Record<string, AudioBuffer>>({})
+  const aAngle = useRef(0); const bAngle = useRef(0)
+  const aPlaying = useRef(false); const bPlaying = useRef(false)
+  const aPR = useRef(1.0); const bPR = useRef(1.0)
+  const vA = useRef<HTMLCanvasElement>(null)
+  const vB = useRef<HTMLCanvasElement>(null)
+  const vizRef = useRef<HTMLCanvasElement>(null)
+
+  const init = useCallback(async () => {
+    if (N.current || loading) return
+    setLoading(true)
+    const ctx = new AudioContext()
+    const analyser = ctx.createAnalyser(); analyser.fftSize = 256
+    const masterGain = ctx.createGain(); masterGain.gain.value = 0.8
+    masterGain.connect(analyser); analyser.connect(ctx.destination)
+    const chain = () => {
+      const bass = ctx.createBiquadFilter(); bass.type = 'lowshelf'; bass.frequency.value = 200
+      const mid = ctx.createBiquadFilter(); mid.type = 'peaking'; mid.frequency.value = 1000; mid.Q.value = 1
+      const treble = ctx.createBiquadFilter(); treble.type = 'highshelf'; treble.frequency.value = 3000
+      const gain = ctx.createGain(); gain.gain.value = 0.8
+      const cfGain = ctx.createGain(); cfGain.gain.value = 1
+      bass.connect(mid); mid.connect(treble); treble.connect(gain); gain.connect(cfGain); cfGain.connect(masterGain)
+      return { bass, mid, treble, gain, cfGain }
+    }
+    const a = chain(), b = chain()
+    N.current = { ctx, analyser, masterGain, aGain: a.gain, aCF: a.cfGain, aBass: a.bass, aMid: a.mid, aTreble: a.treble, bGain: b.gain, bCF: b.cfGain, bBass: b.bass, bMid: b.mid, bTreble: b.treble }
+    const [ba, bb, pd] = await Promise.all([genBeat('house'), genBeat('hiphop'), genPads(ctx.sampleRate)])
+    aBuf.current = ba; bBuf.current = bb; padBufs.current = pd
+    setReady(true); setLoading(false)
+  }, [loading])
+
+  const playDeck = useCallback((d: 'A' | 'B') => {
+    const n = N.current; if (!n) return
+    const buf = d === 'A' ? aBuf.current : bBuf.current; if (!buf) return
+    const src = n.ctx.createBufferSource()
+    src.buffer = buf; src.loop = true
+    src.playbackRate.value = d === 'A' ? aPR.current : bPR.current
+    src.connect(d === 'A' ? n.aBass : n.bBass)
+    const off = (d === 'A' ? aOff.current : bOff.current) % buf.duration
+    src.start(0, off)
+    if (d === 'A') { aSrc.current = src; aStart.current = n.ctx.currentTime - off; setAPlay(true); aPlaying.current = true }
+    else { bSrc.current = src; bStart.current = n.ctx.currentTime - off; setBPlay(true); bPlaying.current = true }
   }, [])
 
-  const totalXP = progress.totalXP
-  const dailyGoal = 50
-  const dailyProgress = Math.min((progress.dailyGoalProgress / dailyGoal) * 100, 100)
-  const completedCount = Object.values(progress.lessons).filter((l) => l.completed).length
+  const stopDeck = useCallback((d: 'A' | 'B') => {
+    const n = N.current; if (!n) return
+    if (d === 'A') { aOff.current = (n.ctx.currentTime - aStart.current) % (aBuf.current?.duration ?? 1); aSrc.current?.stop(); aSrc.current = null; setAPlay(false); aPlaying.current = false }
+    else { bOff.current = (n.ctx.currentTime - bStart.current) % (bBuf.current?.duration ?? 1); bSrc.current?.stop(); bSrc.current = null; setBPlay(false); bPlaying.current = false }
+  }, [])
 
-  if (!mounted) {
+  const toggle = useCallback((d: 'A' | 'B') => {
+    if (d === 'A') aPlaying.current ? stopDeck('A') : playDeck('A')
+    else bPlaying.current ? stopDeck('B') : playDeck('B')
+  }, [playDeck, stopDeck])
+
+  const loadFile = useCallback(async (d: 'A' | 'B', file: File) => {
+    const n = N.current; if (!n) return
+    const buf = await n.ctx.decodeAudioData(await file.arrayBuffer())
+    const name = file.name.replace(/\.[^.]+$/, '').slice(0, 24)
+    if (d === 'A') { const wp = aPlaying.current; if (wp) stopDeck('A'); aBuf.current = buf; aOff.current = 0; setAName(name); if (wp) setTimeout(() => playDeck('A'), 50) }
+    else { const wp = bPlaying.current; if (wp) stopDeck('B'); bBuf.current = buf; bOff.current = 0; setBName(name); if (wp) setTimeout(() => playDeck('B'), 50) }
+  }, [stopDeck, playDeck])
+
+  const triggerPad = useCallback((name: string) => {
+    const n = N.current; const buf = padBufs.current[name]; if (!n || !buf) return
+    const src = n.ctx.createBufferSource(); src.buffer = buf; src.connect(n.masterGain); src.start(0)
+    setPadActive(name); setTimeout(() => setPadActive(null), 150)
+  }, [])
+
+  const pitchChange = useCallback((d: 'A' | 'B', v: number) => {
+    if (d === 'A') { setAPitch(v); aPR.current = v; if (aSrc.current) aSrc.current.playbackRate.value = v }
+    else { setBPitch(v); bPR.current = v; if (bSrc.current) bSrc.current.playbackRate.value = v }
+  }, [])
+
+  useEffect(() => { if (N.current) N.current.aGain.gain.value = aVol }, [aVol])
+  useEffect(() => { if (N.current) N.current.bGain.gain.value = bVol }, [bVol])
+  useEffect(() => { if (N.current) N.current.masterGain.gain.value = master }, [master])
+  useEffect(() => { if (N.current) N.current.aBass.gain.value = aBass }, [aBass])
+  useEffect(() => { if (N.current) N.current.aMid.gain.value = aMid }, [aMid])
+  useEffect(() => { if (N.current) N.current.aTreble.gain.value = aTreble }, [aTreble])
+  useEffect(() => { if (N.current) N.current.bBass.gain.value = bBass }, [bBass])
+  useEffect(() => { if (N.current) N.current.bMid.gain.value = bMid }, [bMid])
+  useEffect(() => { if (N.current) N.current.bTreble.gain.value = bTreble }, [bTreble])
+  useEffect(() => {
+    if (!N.current) return
+    const a = cf * 0.5 * Math.PI
+    N.current.aCF.gain.value = Math.cos(a)
+    N.current.bCF.gain.value = Math.cos((1 - cf) * 0.5 * Math.PI)
+  }, [cf])
+
+  // Animation loop
+  useEffect(() => {
+    let id: number
+    const loop = () => {
+      if (aPlaying.current) aAngle.current += 0.018 * aPR.current
+      if (bPlaying.current) bAngle.current += 0.018 * bPR.current
+      if (vA.current) drawVinyl(vA.current, aAngle.current, '#00ff88')
+      if (vB.current) drawVinyl(vB.current, bAngle.current, '#00b4ff')
+      if (vizRef.current && N.current) {
+        const c = vizRef.current.getContext('2d')
+        if (c) {
+          const data = new Uint8Array(N.current.analyser.frequencyBinCount)
+          N.current.analyser.getByteFrequencyData(data)
+          const w = vizRef.current.width, h = vizRef.current.height
+          c.fillStyle = '#0a0a0a'; c.fillRect(0, 0, w, h)
+          const bw = (w / data.length) * 2.5
+          data.forEach((v, i) => {
+            const bh = (v / 255) * h
+            c.fillStyle = `rgb(0,${v},${Math.floor(v * 0.4)})`
+            c.fillRect(i * bw, h - bh, bw - 1, bh)
+          })
+        }
+      }
+      id = requestAnimationFrame(loop)
+    }
+    id = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(id)
+  }, [])
+
+  const PADS = [
+    { id: 'kick',    label: '🥁 KICK',   col: '#ff4444' },
+    { id: 'snare',   label: '🎯 SNARE',  col: '#ff8800' },
+    { id: 'hihat',   label: '🎩 HIHAT',  col: '#ffcc00' },
+    { id: 'clap',    label: '👏 CLAP',   col: '#88ff00' },
+    { id: 'openhat', label: '🔔 OPEN',   col: '#00ffcc' },
+    { id: 'bass',    label: '🔊 BASS',   col: '#0088ff' },
+    { id: 'stab',    label: '⚡ STAB',   col: '#8844ff' },
+    { id: 'reverse', label: '🔄 REV',    col: '#ff44cc' },
+  ]
+
+  const EQ = ({ label, val, set, node }: { label: string; val: number; set: (v: number) => void; node: BiquadFilterNode | null }) => (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className="text-[9px] text-gray-500">{label}</span>
+      <input type="range" min={-12} max={12} step={1} value={val} className="w-full"
+        onChange={e => { const v = +e.target.value; set(v); if (node) node.gain.value = v }} />
+      <span className="text-[9px] text-gray-600">{val > 0 ? '+' : ''}{val}</span>
+    </div>
+  )
+
+  const DeckPanel = ({ d }: { d: 'A' | 'B' }) => {
+    const isA = d === 'A'
+    const playing = isA ? aPlay : bPlay
+    const vol = isA ? aVol : bVol
+    const pitch = isA ? aPitch : bPitch
+    const name = isA ? aName : bName
+    const color = isA ? '#00ff88' : '#00b4ff'
+    const bpmBase = isA ? 128 : 90
+    const n = N.current
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-duo-green text-4xl animate-bounce">🦉</div>
+      <div className="flex-1 flex flex-col items-center p-3 gap-2 min-w-0 overflow-hidden">
+        <div className="text-[10px] font-bold tracking-widest truncate w-full text-center" style={{ color }}>DECK {d}</div>
+        <div className="text-[9px] text-gray-500 truncate w-full text-center">{name}</div>
+        <canvas ref={isA ? vA : vB} width={150} height={150} className="rounded-full flex-shrink-0"
+          style={{ boxShadow: `0 0 24px ${color}44` }} />
+        <div className="text-xs font-mono font-bold" style={{ color }}>♩ {Math.round(bpmBase * pitch)} BPM</div>
+        <div className="flex gap-2">
+          <button onClick={() => { if (!ready) { init().then(() => playDeck(d)); return } toggle(d) }}
+            className="px-3 py-1.5 rounded text-xs font-bold transition-all active:scale-95"
+            style={{ background: playing ? '#ff444420' : color + '20', border: `1px solid ${playing ? '#ff4444' : color}`, color: playing ? '#ff4444' : color }}>
+            {playing ? '⏸ PAUSE' : '▶ PLAY'}
+          </button>
+          <label className="px-2.5 py-1.5 rounded text-xs cursor-pointer hover:bg-[#1a1a3a] border border-[#2a2a4a] text-gray-400">
+            📂
+            <input type="file" accept="audio/*" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (!f) return; if (!ready) init().then(() => loadFile(d, f)); else loadFile(d, f) }} />
+          </label>
+        </div>
+        <div className="w-full">
+          <div className="flex justify-between text-[9px] text-gray-500 mb-0.5"><span>VOL</span><span>{Math.round(vol * 100)}%</span></div>
+          <input type="range" min={0} max={1} step={0.01} value={vol} className="w-full"
+            onChange={e => isA ? setAVol(+e.target.value) : setBVol(+e.target.value)} />
+        </div>
+        <div className="w-full">
+          <div className="flex justify-between text-[9px] text-gray-500 mb-0.5">
+            <span>PITCH</span><span>{pitch >= 1 ? '+' : ''}{Math.round((pitch - 1) * 100)}%</span>
+          </div>
+          <input type="range" min={0.8} max={1.2} step={0.005} value={pitch} className="w-full"
+            onChange={e => pitchChange(d, +e.target.value)} />
+        </div>
+        <div className="w-full grid grid-cols-3 gap-1.5 pt-1 border-t border-[#1a1a2e]">
+          {(isA
+            ? [['BASS', aBass, setABass, n?.aBass], ['MID', aMid, setAMid, n?.aMid], ['HI', aTreble, setATreble, n?.aTreble]]
+            : [['BASS', bBass, setBBass, n?.bBass], ['MID', bMid, setBMid, n?.bMid], ['HI', bTreble, setBTreble, n?.bTreble]]
+          ).map(([l, v, s, node]) =>
+            <EQ key={l as string} label={l as string} val={v as number} set={s as (v: number) => void} node={(node as BiquadFilterNode) ?? null} />
+          )}
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow-sm sticky top-0 z-50">
-        <div className="max-w-2xl mx-auto px-4 py-3">
-          <div className="flex items-center justify-between">
-            {/* Logo */}
-            <div className="flex items-center gap-2">
-              <span className="text-3xl animate-float">🦉</span>
-              <div>
-                <h1 className="text-xl font-black text-duo-green leading-none">LinguaLearn</h1>
-                <p className="text-xs text-gray-400 font-medium">Spanish · English</p>
-              </div>
+    <div className="h-screen flex flex-col bg-[#0a0a0a] text-white select-none overflow-hidden"
+      onClick={!ready && !loading ? () => init() : undefined}>
+      <div className="flex items-center justify-between px-4 py-2 bg-[#0d0d0d] border-b border-[#1a1a2e] shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🎧</span>
+          <span className="font-bold tracking-[0.25em] text-[#00ff88]">DJMAX</span>
+        </div>
+        {!ready && (
+          <span className="text-[#00ff88] text-xs font-mono animate-pulse">
+            {loading ? '⏳ Generating beats…' : '▶ Click anywhere to start'}
+          </span>
+        )}
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] text-gray-500">MASTER</span>
+          <input type="range" min={0} max={1} step={0.01} value={master} className="w-20"
+            onChange={e => setMaster(+e.target.value)} onClick={e => e.stopPropagation()} />
+          <span className="text-[9px] text-gray-400 w-6">{Math.round(master * 100)}%</span>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden min-h-0">
+        <DeckPanel d="A" />
+        <div className="w-32 shrink-0 flex flex-col items-center p-3 gap-3 bg-[#0c0c0c] border-x border-[#1a1a2e]">
+          <div className="text-[9px] font-bold tracking-widest text-[#00b4ff]">MIXER</div>
+          <div className="w-full">
+            <div className="flex justify-between text-[9px] mb-0.5"><span style={{ color: '#00ff88' }}>A</span><span style={{ color: '#00b4ff' }}>B</span></div>
+            <input type="range" min={0} max={1} step={0.01} value={cf} className="w-full"
+              onChange={e => setCf(+e.target.value)} onClick={e => e.stopPropagation()} />
+            <div className="text-[9px] text-gray-600 text-center mt-0.5">CROSSFADER</div>
+          </div>
+          {[{ label: 'BPM A', val: Math.round(128 * aPitch), color: '#00ff88' }, { label: 'BPM B', val: Math.round(90 * bPitch), color: '#00b4ff' }].map(({ label, val, color }) => (
+            <div key={label} className="w-full bg-[#0a0a1a] rounded p-2 text-center border border-[#1a1a2e]">
+              <div className="font-mono font-bold text-base" style={{ color }}>{val}</div>
+              <div className="text-[8px] text-gray-600">{label}</div>
             </div>
-
-            {/* Stats */}
-            <div className="flex items-center gap-3">
-              {/* Streak */}
-              <div className="flex items-center gap-1 bg-orange-50 px-3 py-1.5 rounded-full border border-orange-100">
-                <span className="text-lg">🔥</span>
-                <span className="font-black text-orange-500 text-sm">{progress.streak}</span>
-              </div>
-
-              {/* XP */}
-              <div className="flex items-center gap-1 bg-yellow-50 px-3 py-1.5 rounded-full border border-yellow-100">
-                <span className="text-lg">⚡</span>
-                <span className="font-black text-duo-yellow text-sm">{totalXP}</span>
-              </div>
-
-              {/* Gems */}
-              <div className="flex items-center gap-1 bg-blue-50 px-3 py-1.5 rounded-full border border-blue-100">
-                <span className="text-lg">💎</span>
-                <span className="font-black text-duo-blue text-sm">{completedCount * 5}</span>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
-      </header>
+        <DeckPanel d="B" />
+      </div>
 
-      <main className="max-w-2xl mx-auto px-4 py-6 space-y-6">
-        {/* Daily Goal Card */}
-        <div className="bg-white rounded-2xl shadow-duo-card p-5 border border-gray-100">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-duo-yellow/20 rounded-full flex items-center justify-center">
-                <span className="text-lg">🎯</span>
-              </div>
-              <div>
-                <h2 className="font-bold text-duo-text text-sm">Daily Goal</h2>
-                <p className="text-xs text-gray-400">{progress.dailyGoalProgress} / {dailyGoal} XP</p>
-              </div>
-            </div>
-            <span className="text-xs font-bold text-duo-green bg-green-50 px-2 py-1 rounded-full">
-              {dailyProgress >= 100 ? '🎉 Complete!' : `${Math.round(dailyProgress)}%`}
-            </span>
-          </div>
-          <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-700 ease-out"
-              style={{
-                width: `${dailyProgress}%`,
-                background: 'linear-gradient(90deg, #FFD900, #FF9600)',
-              }}
-            />
-          </div>
-        </div>
+      <div className="shrink-0 border-t border-[#1a1a2e]">
+        <canvas ref={vizRef} width={1200} height={52} className="w-full" style={{ height: 52, display: 'block' }} />
+      </div>
 
-        {/* Progress Summary */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-white rounded-2xl shadow-duo-card p-4 text-center border border-gray-100">
-            <div className="text-2xl font-black text-duo-green">{completedCount}</div>
-            <div className="text-xs text-gray-400 font-medium mt-0.5">Lessons Done</div>
-          </div>
-          <div className="bg-white rounded-2xl shadow-duo-card p-4 text-center border border-gray-100">
-            <div className="text-2xl font-black text-duo-yellow">{totalXP}</div>
-            <div className="text-xs text-gray-400 font-medium mt-0.5">Total XP</div>
-          </div>
-          <div className="bg-white rounded-2xl shadow-duo-card p-4 text-center border border-gray-100">
-            <div className="text-2xl font-black text-orange-500">{progress.streak}</div>
-            <div className="text-xs text-gray-400 font-medium mt-0.5">Day Streak</div>
-          </div>
-        </div>
-
-        {/* Lessons Section */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-black text-duo-text">Lessons</h2>
-            <span className="text-xs text-gray-400 font-medium">{completedCount}/{lessons.length} complete</span>
-          </div>
-
-          <div className="space-y-3">
-            {lessons.map((lesson, index) => {
-              const lessonProgress = progress.lessons[lesson.id]
-              const isCompleted = lessonProgress?.completed ?? false
-              const isLocked = index > 0 && !progress.lessons[lessons[index - 1].id]?.completed
-              const stars = lessonProgress?.stars ?? 0
-              const xpEarned = lessonProgress?.xpEarned ?? 0
-
-              return (
-                <Link
-                  key={lesson.id}
-                  href={isLocked ? '#' : `/lesson/${lesson.id}`}
-                  className={`block ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-                  onClick={(e) => isLocked && e.preventDefault()}
-                >
-                  <div
-                    className={`
-                      relative bg-white rounded-2xl shadow-duo-card border-2 p-4
-                      transition-all duration-200
-                      ${isLocked
-                        ? 'border-gray-100 opacity-60'
-                        : isCompleted
-                          ? 'border-green-200 hover:border-duo-green hover:shadow-lg hover:-translate-y-0.5'
-                          : 'border-gray-100 hover:border-duo-blue hover:shadow-lg hover:-translate-y-0.5'
-                      }
-                    `}
-                  >
-                    <div className="flex items-center gap-4">
-                      {/* Lesson Icon */}
-                      <div
-                        className="w-14 h-14 rounded-2xl flex items-center justify-center text-2xl flex-shrink-0 shadow-sm"
-                        style={{ backgroundColor: `${lesson.color}20` }}
-                      >
-                        {isLocked ? '🔒' : lesson.emoji}
-                      </div>
-
-                      {/* Lesson Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-black text-duo-text text-base">{lesson.title}</h3>
-                          {isCompleted && (
-                            <span className="text-xs font-bold text-duo-green bg-green-50 px-2 py-0.5 rounded-full">
-                              ✓ Done
-                            </span>
-                          )}
-                          {!isLocked && !isCompleted && index === completedCount && (
-                            <span className="text-xs font-bold text-duo-blue bg-blue-50 px-2 py-0.5 rounded-full pulse-glow">
-                              ▶ Start
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-sm text-gray-400 font-medium mt-0.5 truncate">
-                          {lesson.description}
-                        </p>
-                        <div className="flex items-center gap-3 mt-1.5">
-                          {isCompleted ? (
-                            <>
-                              <StarRating stars={stars} />
-                              <span className="text-xs font-bold text-duo-yellow">+{xpEarned} XP earned</span>
-                            </>
-                          ) : (
-                            <span className="text-xs font-bold text-gray-400">
-                              {isLocked ? 'Complete previous lesson to unlock' : `+${lesson.xp} XP available`}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Right arrow / lock */}
-                      <div className="flex-shrink-0">
-                        {isLocked ? (
-                          <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#AFAFAF" strokeWidth="2.5">
-                              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                            </svg>
-                          </div>
-                        ) : (
-                          <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center"
-                            style={{ backgroundColor: `${lesson.color}20` }}
-                          >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={lesson.color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="9 18 15 12 9 6" />
-                            </svg>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Progress dots for active lesson */}
-                    {!isLocked && !isCompleted && index === completedCount && (
-                      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-1.5">
-                        {lesson.questions.map((_, qIdx) => (
-                          <div
-                            key={qIdx}
-                            className="h-1.5 flex-1 rounded-full bg-gray-200"
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </Link>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Footer motivational section */}
-        <div className="bg-gradient-to-br from-duo-green to-duo-green-dark rounded-2xl p-6 text-white text-center">
-          <div className="text-3xl mb-2">🦉</div>
-          <h3 className="font-black text-lg mb-1">Keep it up!</h3>
-          <p className="text-green-100 text-sm">
-            {completedCount === 0
-              ? 'Start your first lesson to begin learning!'
-              : completedCount === lessons.length
-                ? 'Amazing! You completed all lessons! 🎉'
-                : `You're ${Math.round((completedCount / lessons.length) * 100)}% through the course!`}
-          </p>
-          {completedCount > 0 && completedCount < lessons.length && (
-            <Link
-              href={`/lesson/${lessons[completedCount].id}`}
-              className="inline-block mt-3 bg-white text-duo-green font-black px-5 py-2 rounded-xl text-sm hover:bg-green-50 transition-colors duo-btn shadow-sm"
-            >
-              Continue Learning →
-            </Link>
-          )}
-        </div>
-      </main>
+      <div className="shrink-0 flex gap-1.5 justify-center px-3 py-2 bg-[#0d0d0d] border-t border-[#1a1a2e] flex-wrap">
+        {PADS.map(({ id, label, col }) => (
+          <button key={id}
+            onMouseDown={e => { e.stopPropagation(); if (!ready) { init(); return } triggerPad(id) }}
+            onTouchStart={e => { e.stopPropagation(); if (!ready) { init(); return } triggerPad(id) }}
+            className={`px-3 py-2 rounded text-xs font-bold active:scale-90 transition-all ${padActive === id ? 'pad-active' : ''}`}
+            style={{ background: padActive === id ? col : col + '18', border: `1px solid ${col}55`, color: padActive === id ? '#000' : col }}>
+            {label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
